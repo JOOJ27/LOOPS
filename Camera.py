@@ -9,10 +9,16 @@ locale.setlocale(locale.LC_ALL, '')
 class Camera:
     CHAR_ASPECT = 0.5  # largura/altura de uma célula do terminal
 
+
     def __init__(self):
         self.TIPO = False
         self.video = cv2.VideoCapture(0)
         self._update_charset()
+        self.kernel = np.array(
+            [[ 0, -1,  0],
+             [-1,  5, -1],
+             [ 0, -1,  0]]
+            )
 
     def _update_charset(self):
         if self.TIPO:
@@ -30,6 +36,8 @@ class Camera:
             return None
 
         frame = cv2.flip(frame, 1)
+        frame = cv2.filter2D(frame, -1, self.kernel)
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fh, fw = gray.shape
 

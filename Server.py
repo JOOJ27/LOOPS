@@ -122,7 +122,8 @@ async def handler(websocket):
     people, pairs = get_stats()
     print(
         f"Client connected. "
-        f"People: {people} | Pairs: {pairs}"
+        f"People: {people} | Pairs: {pairs}",
+        flush = True,
     )
 
     try:
@@ -232,12 +233,14 @@ async def handler(websocket):
         people, pairs = get_stats()
         print(
             f"Client disconnected. "
-            f"People: {people} | Pairs: {pairs}"
+            f"People: {people} | Pairs: {pairs}",
+            flush = True,
+
         )
 
 
 async def main():
-    print(f"WebSocket server running at ws://{HOST}:{PORT}")
+    print(f"WebSocket server running at ws://{HOST}:{PORT}", flush = True,)
 
     async with serve(handler, HOST, PORT):
         await asyncio.Future()
@@ -247,4 +250,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Server shut down.")
+        print("Server shut down.", flush = True,)

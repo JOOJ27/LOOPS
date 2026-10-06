@@ -302,10 +302,10 @@ async def receive_loop(websocket, chat, state):
             elif message_type == "system":
                 system_message = message.get("message", "")
 
-                if system_message == "Pessoa encontrada!":
+                if system_message == "Partner found!":
                     state["paired"] = True
 
-                elif system_message == "A outra pessoa saiu.":
+                elif system_message == "The other person left.":
                     state["paired"] = False
                     state["friend_frame"] = []
 
@@ -679,6 +679,19 @@ async def curses_main(stdscr):
 
                                 if msg == "/type":
                                     my_video.TIPO = not my_video.TIPO
+                                    
+                                elif msg == "/skip":
+                                    # Envia o pedido de skip para o servidor
+                                    await send_json(websocket, "skip")
+                                    
+                                    # Reseta a tela local para voltar ao modo de espera
+                                    state["paired"] = False
+                                    state["friend_frame"] = []
+                                    chat.messages.clear() # Limpa o chat para a próxima pessoa
+                                    
+                                    # Redesenha a tela imediatamente para não esperar o próximo frame
+                                    stdscr.clear()
+                                    stdscr.refresh()
 
                                 elif msg:
                                     chat.add_message(
@@ -686,6 +699,8 @@ async def curses_main(stdscr):
                                         msg,
                                         mine=True,
                                     )
+                                    
+                                    
 
                                     await send_json(
                                         websocket,

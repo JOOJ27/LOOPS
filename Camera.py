@@ -3,22 +3,21 @@ import curses
 import locale
 import numpy as np
 
+from Config import(
+    CHAR_ASPECT,
+    KERNEL
+)
+
 locale.setlocale(locale.LC_ALL, '')
 
 
 class Camera:
-    CHAR_ASPECT = 0.5  # largura/altura de uma célula do terminal
-
 
     def __init__(self):
         self.TIPO = False
         self.video = cv2.VideoCapture(0)
         self._update_charset()
-        self.kernel = np.array(
-            [[ 0, -1,  0],
-             [-1,  5, -1],
-             [ 0, -1,  0]]
-            )
+
 
     def _update_charset(self):
         if self.TIPO:
@@ -36,15 +35,15 @@ class Camera:
             return None
 
         frame = cv2.flip(frame, 1)
-        frame = cv2.filter2D(frame, -1, self.kernel)
+        frame = cv2.filter2D(frame, -1, KERNEL)
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fh, fw = gray.shape
 
         # maior escala em que a imagem cabe na largura E na altura
-        scale = min(max_w / fw, max_h / (fh * self.CHAR_ASPECT))
+        scale = min(max_w / fw, max_h / (fh * CHAR_ASPECT))
         cols = max(1, int(fw * scale))
-        rows = max(1, int(fh * scale * self.CHAR_ASPECT))
+        rows = max(1, int(fh * scale * CHAR_ASPECT))
 
         small = cv2.resize(gray, (cols, rows), interpolation=cv2.INTER_AREA)
 

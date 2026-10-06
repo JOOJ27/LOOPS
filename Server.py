@@ -40,16 +40,23 @@ def get_clients():
     return clients
 
 
-def pair_client(websocket):
-    """Tenta encontrar alguém esperando e cria o par."""
-    while waiting:
-        other = waiting.popleft()
+def pair_client(websocket, ignore=None):
+    """Tenta encontrar alguém esperando e cria o par, ignorando um ex-parceiro."""
+    # Como precisamos pular elementos específicos (o ex-parceiro), 
+    # iteramos sobre a fila em vez de dar popleft direto.
+    for i in range(len(waiting)):
+        other = waiting[i]
+        
+        # Se a pessoa na fila não for quem queremos ignorar, forma o par!
+        if other != ignore:
+            del waiting[i] # Remove a pessoa da fila
 
-        partners[websocket] = other
-        partners[other] = websocket
+            partners[websocket] = other
+            partners[other] = websocket
 
-        return other
+            return other
 
+    # Se a fila estiver vazia ou só tiver a pessoa ignorada, entra na fila.
     waiting.append(websocket)
     return None
 
@@ -95,17 +102,17 @@ async def handler(websocket):
     if partner is None:
         await send_system(
             websocket,
-            "Esperando outra pessoa...",
+            "Waiting for someone else...",
         )
     else:
         await asyncio.gather(
             send_system(
                 websocket,
-                "Pessoa encontrada!",
+                "Partner found!",
             ),
             send_system(
                 partner,
-                "Pessoa encontrada!",
+                "Partner found!",
             ),
         )
 
@@ -113,8 +120,8 @@ async def handler(websocket):
 
     people, pairs = get_stats()
     print(
-        f"Cliente conectado. "
-        f"Pessoas: {people} | Pares: {pairs}"
+        f"Client connected. "
+        f"People: {people} | Pairs: {pairs}"
     )
 
     try:
@@ -128,6 +135,43 @@ async def handler(websocket):
                 continue
 
             message_type = message.get("type")
+
+            # ----------------------------------------------------
+            # LÓGICA DE SKIP (PULAR)
+            # ----------------------------------------------------
+            if message_type == "skip":
+                partner = partners.pop(websocket, None)
+                
+                if partner is not None:
+                    # Remove o parceiro da relação
+                    partners.pop(partner, None)
+
+                    # 1. Avisa o parceiro que a pessoa saiu e tenta pareá-lo de novo
+                    await send_system(partner, "The other person left.")
+                    new_partner = pair_client(partner) # Parceiro não ignora ninguém
+
+                    if new_partner is None:
+                        await send_system(partner, "Waiting for someone else...")
+                    else:
+                        await asyncio.gather(
+                            send_system(partner, "Partner found!"),
+                            send_system(new_partner, "Partner found!"),
+                        )
+
+                    # 2. Tenta parear quem enviou o skip (ignorando o ex-parceiro!)
+                    new_match = pair_client(websocket, ignore=partner)
+
+                    if new_match is None:
+                        await send_system(websocket, "Waiting for someone else...")
+                    else:
+                        await asyncio.gather(
+                            send_system(websocket, "Partner found!"),
+                            send_system(new_match, "Partner found!"),
+                        )
+                    
+                    await broadcast_stats()
+                continue # Pula para a próxima mensagem do loop
+            # ----------------------------------------------------
 
             # O servidor só faz relay desses tipos.
             if message_type not in {"chat", "video"}:
@@ -167,7 +211,7 @@ async def handler(websocket):
 
             await send_system(
                 partner,
-                "A outra pessoa saiu.",
+                "The other person left.",
             )
 
             # O parceiro continua conectado: tenta parear com alguém que já
@@ -179,25 +223,25 @@ async def handler(websocket):
             if new_partner is None:
                 await send_system(
                     partner,
-                    "Esperando outra pessoa...",
+                    "Waiting for someone else...",
                 )
             else:
                 await asyncio.gather(
-                    send_system(partner, "Pessoa encontrada!"),
-                    send_system(new_partner, "Pessoa encontrada!"),
+                    send_system(partner, "Partner found!"),
+                    send_system(new_partner, "Partner found!"),
                 )
 
         await broadcast_stats()
 
         people, pairs = get_stats()
         print(
-            f"Cliente desconectado. "
-            f"Pessoas: {people} | Pares: {pairs}"
+            f"Client disconnected. "
+            f"People: {people} | Pairs: {pairs}"
         )
 
 
 async def main():
-    print(f"Servidor WebSocket em ws://{HOST}:{PORT}")
+    print(f"WebSocket server running at ws://{HOST}:{PORT}")
 
     async with serve(handler, HOST, PORT):
         await asyncio.Future()
@@ -207,4 +251,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Servidor encerrado.")
+        print("Server shut down.")

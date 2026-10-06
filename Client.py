@@ -24,15 +24,20 @@ SERVER_URI = "ws://127.0.0.1:8765"
 FPS = 30
 FRAME_INTERVAL = 1 / FPS
 
-
-def make_panel(h, w, y, x, title, pair):
-    """Cria uma janela com borda e título."""
+def make_panel(h, w, y, x, title, pair, draw_box=True):
+    """Cria uma janela com borda (opcional) e título."""
     outer = curses.newwin(h, w, y, x)
-    outer.box()
-    outer.addstr(0, 2, f" {title} ", curses.color_pair(pair))
-    inner = outer.derwin(h - 2, w - 2, 1, 1)
+    
+    if draw_box:
+        outer.box()
+        if title:
+            outer.addstr(0, 2, f" {title} ", curses.color_pair(pair))
+        inner = outer.derwin(h - 2, w - 2, 1, 1)
+    else:
+        # Sem borda, a janela interna ocupa todo o espaço (h, w) começando do (0, 0)
+        inner = outer.derwin(h, w, 0, 0)
+        
     return outer, inner
-
 
 def create_layout(stdscr):
     H, W = stdscr.getmaxyx()
@@ -107,6 +112,7 @@ def create_waiting_layout(stdscr):
             0,
             "Nerd info",
             2,
+            True
         ),
         "main": make_panel(
             main_h,
@@ -115,6 +121,7 @@ def create_waiting_layout(stdscr):
             0,
             "Main",
             3,
+            False
         ),
     }
 
@@ -361,14 +368,14 @@ def draw_waiting_screen(layout, state, frame_index):
     try:
         logs_win.addstr(
             0,
-            2,
-            f"Pessoas no servidor: {people}"
+            3,
+            f"People online: {people}"
         )
 
         logs_win.addstr(
             0,
-            30,
-            f"Pares ativos: {pairs}"
+            31,
+            f"Active pairs: {pairs}"
         )
 
         # Bolinha verde
@@ -438,8 +445,8 @@ def draw_waiting_screen(layout, state, frame_index):
     )
 
     text = (
-        "Tentando parear você "
-        f"com alguém{dots}"
+        "Trying to match u "
+        f"with someone{dots}"
     )
 
     text_y = (
@@ -543,21 +550,22 @@ async def curses_main(stdscr):
     stdscr.nodelay(True)
 
     curses.start_color()
+    curses.use_default_colors()
 
     curses.init_pair(
         1,
         curses.COLOR_RED,
-        curses.COLOR_BLACK,
+        -1,
     )
     curses.init_pair(
         2,
         curses.COLOR_GREEN,
-        curses.COLOR_BLACK,
+        -1,
     )
     curses.init_pair(
         3,
         curses.COLOR_CYAN,
-        curses.COLOR_BLACK,
+        -1,
     )
 
     layout = create_layout(stdscr)

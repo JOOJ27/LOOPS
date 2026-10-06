@@ -3,8 +3,6 @@ import curses
 import json
 import time
 import base64
-import os
-os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
 import numpy as np
 import sounddevice as sd
@@ -81,6 +79,7 @@ def create_layout(stdscr):
             0,
             "Friend",
             3,
+            False,
         ),
         "me": make_panel(
             me_h,
@@ -89,6 +88,7 @@ def create_layout(stdscr):
             0,
             "You",
             2,
+            False,
         ),
         "chat": make_panel(
             body_h - INPUT_H,
@@ -161,11 +161,36 @@ def refresh_layout(layout):
     curses.doupdate()
 
 
-def draw_ascii_lines(win, lines, placeholder=""):
-    """Desenha um frame ASCII já processado dentro de uma janela curses.
+def draw_box(win, y, x, h, w, title="", pair=0):
+    """Desenha uma borda no retângulo (y, x, h, w) dentro de win."""
+    if h < 3 or w < 3:
+        return
 
-    Se não há frame, mostra o placeholder (em vez de uma caixa vazia sem
-    explicação).
+    def safe(fn, *args):
+        # escrever na última célula da janela levanta curses.error,
+        # mas o caractere é desenhado mesmo assim
+        try:
+            fn(*args)
+        except curses.error:
+            pass
+
+    safe(win.addch, y, x, curses.ACS_ULCORNER)
+    safe(win.hline, y, x + 1, curses.ACS_HLINE, w - 2)
+    safe(win.addch, y, x + w - 1, curses.ACS_URCORNER)
+    safe(win.vline, y + 1, x, curses.ACS_VLINE, h - 2)
+    safe(win.vline, y + 1, x + w - 1, curses.ACS_VLINE, h - 2)
+    safe(win.addch, y + h - 1, x, curses.ACS_LLCORNER)
+    safe(win.hline, y + h - 1, x + 1, curses.ACS_HLINE, w - 2)
+    safe(win.addch, y + h - 1, x + w - 1, curses.ACS_LRCORNER)
+
+    if title and w >= len(title) + 6:
+        safe(win.addstr, y, x + 2, f" {title} ", curses.color_pair(pair))
+
+
+def draw_ascii_lines(win, lines, placeholder="", title="", pair=0):
+    """Desenha o frame ASCII com a borda ajustada ao tamanho da imagem.
+
+    Sem frame, desenha a borda no painel inteiro com o placeholder no meio.
     """
     if win is None:
         return
@@ -173,15 +198,26 @@ def draw_ascii_lines(win, lines, placeholder=""):
     h, w = win.getmaxyx()
     win.erase()
 
-    if not lines or h < 1 or w < 1:
-        if placeholder and h >= 1 and w >= 2:
-            text = placeholder[:w - 1]
+    if h < 3 or w < 3:
+        win.noutrefresh()
+        return
+
+    # área útil para a imagem, já descontando a borda
+    max_w, max_h = w - 2, h - 2
+    visible = [line[:max_w] for line in lines[:max_h]] if lines else []
+
+    # Sem imagem: borda no painel inteiro + placeholder no meio
+    if not visible:
+        draw_box(win, 0, 0, h, w, title, pair)
+
+        if placeholder:
+            text = placeholder[:w - 2]
             try:
                 win.addnstr(
                     h // 2,
                     max(0, (w - len(text)) // 2),
                     text,
-                    w - 1,
+                    w - 2,
                     curses.A_DIM,
                 )
             except curses.error:
@@ -190,25 +226,18 @@ def draw_ascii_lines(win, lines, placeholder=""):
         win.noutrefresh()
         return
 
-    visible_lines = [line[:w] for line in lines[:h]]
+    image_h = len(visible)
+    image_w = max(len(line) for line in visible)
 
-    image_h = len(visible_lines)
-    image_w = max(
-        (len(line) for line in visible_lines),
-        default=0,
-    )
+    box_h, box_w = image_h + 2, image_w + 2
+    box_y = (h - box_h) // 2
+    box_x = (w - box_w) // 2
 
-    y0 = max(0, (h - image_h) // 2)
-    x0 = max(0, (w - image_w) // 2)
+    draw_box(win, box_y, box_x, box_h, box_w, title, pair)
 
-    for y, line in enumerate(visible_lines):
+    for i, line in enumerate(visible):
         try:
-            win.addnstr(
-                y0 + y,
-                x0,
-                line,
-                max(0, w - x0),
-            )
+            win.addnstr(box_y + 1 + i, box_x + 1, line, image_w)
         except curses.error:
             pass
 
@@ -318,8 +347,8 @@ async def camera_send_loop(websocket, camera, state):
                 else:
                     if frame is None:
                         state["camera_error"] = (
-                            "No camera image "
-                            "(Another process using it)"
+                            "sem imagem da câmera "
+                            "(em uso por outro processo?)"
                         )
 
                 if frame is None:
@@ -569,20 +598,24 @@ def draw_call_screen(layout, state, box, chat):
     # Vídeo do usuário e do amigo (com placeholder)
     # -----------------------------------------------
     if state["camera_ok"] is None:
-        my_placeholder = "Initializing camera"
+        my_placeholder = "Iniciando câmera..."
     else:
-        my_placeholder = "No camera image"
+        my_placeholder = "Sem imagem da câmera"
 
     draw_ascii_lines(
         layout["me"][1],
         state["my_frame"],
         placeholder=my_placeholder,
+        title="You",
+        pair=2,
     )
 
     draw_ascii_lines(
         layout["friend"][1],
         state["friend_frame"],
-        placeholder="waiting for friend image",
+        placeholder="Aguardando vídeo do amigo...",
+        title="Friend",
+        pair=3,
     )
 
     # -----------------------------------------------
@@ -778,7 +811,7 @@ async def curses_main(stdscr):
                                 elif msg == "/mic":
                                     # Alterna o estado do microfone
                                     state["mic_active"] = not state["mic_active"]
-                                    status = "activated" if state["mic_active"] else "muted"
+                                    status = "ativado" if state["mic_active"] else "mutado"
                                     chat.add_message("System", f"Microfone {status}.")
 
                                 elif msg == "/skip":
@@ -796,7 +829,7 @@ async def curses_main(stdscr):
 
                                 elif msg:
                                     chat.add_message(
-                                        "You",
+                                        "Você",
                                         msg,
                                         mine=True,
                                     )
@@ -841,9 +874,10 @@ async def curses_main(stdscr):
                         layout["me"][1].getmaxyx()
                     )
 
+                    # desconta a borda, que agora é desenhada por nós
                     state["camera_size"] = (
-                        camera_w,
-                        camera_h,
+                        max(1, camera_w - 2),
+                        max(1, camera_h - 2),
                     )
 
                     # =====================================
@@ -903,7 +937,7 @@ async def curses_main(stdscr):
         if layout is not None:
             chat.add_message(
                 "System",
-                f"Not possible to connect due to: {exc}",
+                f"Não foi possível conectar: {exc}",
             )
 
             chat.draw()
@@ -919,10 +953,7 @@ def main(stdscr):
     asyncio.run(
         curses_main(stdscr)
     )
-    
-def run():
-    curses.wrapper(main)
 
 
 if __name__ == "__main__":
-    run()
+    curses.wrapper(main)

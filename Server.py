@@ -42,8 +42,6 @@ def get_clients():
 
 def pair_client(websocket, ignore=None):
     """Tenta encontrar alguém esperando e cria o par, ignorando um ex-parceiro."""
-    # Como precisamos pular elementos específicos (o ex-parceiro), 
-    # iteramos sobre a fila em vez de dar popleft direto.
     for i in range(len(waiting)):
         other = waiting[i]
         
@@ -146,7 +144,6 @@ async def handler(websocket):
                     # Remove o parceiro da relação
                     partners.pop(partner, None)
 
-                    # 1. Avisa o parceiro que a pessoa saiu e tenta pareá-lo de novo
                     await send_system(partner, "The other person left.")
                     new_partner = pair_client(partner) # Parceiro não ignora ninguém
 
@@ -158,7 +155,6 @@ async def handler(websocket):
                             send_system(new_partner, "Partner found!"),
                         )
 
-                    # 2. Tenta parear quem enviou o skip (ignorando o ex-parceiro!)
                     new_match = pair_client(websocket, ignore=partner)
 
                     if new_match is None:
@@ -173,8 +169,8 @@ async def handler(websocket):
                 continue # Pula para a próxima mensagem do loop
             # ----------------------------------------------------
 
-            # O servidor só faz relay desses tipos.
-            if message_type not in {"chat", "video"}:
+            # AQUI ESTÁ A MUDANÇA: Adicionado "audio" à lista permitida
+            if message_type not in {"chat", "video", "audio"}:
                 continue
 
             partner = partners.get(websocket)
@@ -214,10 +210,7 @@ async def handler(websocket):
                 "The other person left.",
             )
 
-            # O parceiro continua conectado: tenta parear com alguém que já
-            # esteja esperando. Antes ele ia direto para o fim da fila, e se
-            # já houvesse outra pessoa esperando, as duas ficavam esperando
-            # uma à outra para sempre.
+
             new_partner = pair_client(partner)
 
             if new_partner is None:

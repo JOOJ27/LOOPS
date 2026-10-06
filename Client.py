@@ -2,6 +2,10 @@ import asyncio
 import curses
 import json
 import time
+import base64
+
+import numpy as np
+import sounddevice as sd
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -15,14 +19,22 @@ from Config import (
     MIN_W,
     LOGS_H,
     INPUT_H,
+    SAMPLE_RATE,
+    CHANNELS, 
+    CHUNK_SIZE,
+    SERVER_URI,
+    FRAME_INTERVAL,
 )
 
 from Animation import GLASSES_FRAMES
 
 
-SERVER_URI = "ws://127.0.0.1:8765"
-FPS = 30
-FRAME_INTERVAL = 1 / FPS
+
+# --- CONFIGURAÇÕES DE ÁUDIO ---
+
+# Fila assíncrona para não bloquear a thread principal
+audio_send_queue = asyncio.Queue()
+
 
 def make_panel(h, w, y, x, title, pair, draw_box=True):
     """Cria uma janela com borda (opcional) e título."""
@@ -213,16 +225,70 @@ async def send_json(websocket, message_type, **data):
         )
     )
 
+# ==================================================
+# ÁUDIO CALLBACKS
+# ==================================================
+def audio_callback(indata, frames, time_info, status):
+    if status:
+        pass
+    audio_int16 = (indata * 32767).astype(np.int16)
+    audio_bytes = audio_int16.tobytes()
+    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    loop = asyncio.get_event_loop()
+    loop.call_soon_threadsafe(audio_send_queue.put_nowait, audio_b64)
+
+
+async def audio_send_loop(websocket, state):
+    loop = asyncio.get_running_loop()
+    audio_send_queue = asyncio.Queue()
+
+    def audio_callback(indata, frames, time_info, status):
+        if status:
+            pass
+
+        audio_int16 = (indata * 32767).astype(np.int16)
+        audio_bytes = audio_int16.tobytes()
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        # O callback roda em outra thread, então usamos
+        # call_soon_threadsafe para voltar ao event loop principal.
+        loop.call_soon_threadsafe(
+            audio_send_queue.put_nowait,
+            audio_b64
+        )
+
+    stream_in = sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=CHANNELS,
+        dtype="float32",
+        callback=audio_callback,
+        blocksize=CHUNK_SIZE
+    )
+
+    try:
+        with stream_in:
+            while True:
+                audio_b64 = await audio_send_queue.get()
+
+                if state["paired"] and state["mic_active"]:
+                    await send_json(
+                        websocket,
+                        "audio",
+                        data=audio_b64
+                    )
+
+    except asyncio.CancelledError:
+        pass
+
+
 
 async def camera_send_loop(websocket, camera, state):
     """
     Captura a câmera, transforma em ASCII e envia para o servidor.
 
     Enquanto não houver parceiro, a câmera não é enviada.
-
-    Erro de CÂMERA (dispositivo ocupado, exceção do cv2/numpy) não é erro de
-    REDE: ele é registrado em state["camera_error"] e o loop continua
-    tentando, em vez de morrer calado como acontecia antes.
+    
     """
     try:
         while True:
@@ -282,7 +348,14 @@ async def camera_send_loop(websocket, camera, state):
 
 
 async def receive_loop(websocket, chat, state):
-    """Recebe vídeo, chat, estado do pareamento e estatísticas."""
+    """Recebe vídeo, áudio, chat, estado do pareamento e estatísticas."""
+    stream_out = sd.OutputStream(
+        samplerate=SAMPLE_RATE,
+        channels=CHANNELS,
+        dtype='int16'
+    )
+    stream_out.start()
+
     try:
         async for raw_message in websocket:
             try:
@@ -295,7 +368,13 @@ async def receive_loop(websocket, chat, state):
 
             message_type = message.get("type")
 
-            if message_type == "video":
+            if message_type == "audio":
+                # Toca o áudio do parceiro
+                raw_bytes = base64.b64decode(message["data"])
+                audio_array = np.frombuffer(raw_bytes, dtype=np.int16)
+                stream_out.write(audio_array)
+
+            elif message_type == "video":
                 raw_frame = message.get("frame", "")
                 state["friend_frame"] = raw_frame.split("\n")
 
@@ -345,6 +424,8 @@ async def receive_loop(websocket, chat, state):
 
     finally:
         state["connected"] = False
+        stream_out.stop()
+        stream_out.close()
 
 
 def draw_waiting_screen(layout, state, frame_index):
@@ -517,10 +598,13 @@ def draw_call_screen(layout, state, box, chat):
         False: "ERRO",
     }[state["camera_ok"]]
 
+    mic_status = "ON" if state["mic_active"] else "MUTED"
+
     parts = [
         "WebSocket: "
         + ("CONNECTED" if state["connected"] else "DISCONNECTED"),
         f"Câmera: {camera_status}",
+        f"Mic: {mic_status}",
     ]
 
     if state["camera_error"]:
@@ -594,6 +678,8 @@ async def curses_main(stdscr):
 
         "camera_ok": None,       # None = ainda iniciando
         "camera_error": None,
+        
+        "mic_active": True,      # Começa com o microfone ativado
 
         "paired": False,
 
@@ -618,6 +704,13 @@ async def curses_main(stdscr):
                 camera_send_loop(
                     websocket,
                     my_video,
+                    state,
+                )
+            )
+            
+            audio_task = asyncio.create_task(
+                audio_send_loop(
+                    websocket,
                     state,
                 )
             )
@@ -680,6 +773,12 @@ async def curses_main(stdscr):
                                 if msg == "/type":
                                     my_video.TIPO = not my_video.TIPO
                                     
+                                elif msg == "/mic":
+                                    # Alterna o estado do microfone
+                                    state["mic_active"] = not state["mic_active"]
+                                    status = "ativado" if state["mic_active"] else "mutado"
+                                    chat.add_message("System", f"Microfone {status}.")
+
                                 elif msg == "/skip":
                                     # Envia o pedido de skip para o servidor
                                     await send_json(websocket, "skip")
@@ -784,10 +883,12 @@ async def curses_main(stdscr):
             finally:
                 receive_task.cancel()
                 camera_task.cancel()
+                audio_task.cancel()
 
                 await asyncio.gather(
                     receive_task,
                     camera_task,
+                    audio_task,
                     return_exceptions=True,
                 )
 

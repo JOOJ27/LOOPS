@@ -12,3 +12,12 @@ KERNEL = np.array(
             )
 
 CHAR_ASPECT = 0.5  # largura/altura de uma célula do terminal
+
+SAMPLE_RATE = 16000
+CHANNELS = 1
+CHUNK_SIZE = 4000
+
+
+SERVER_URI = "ws://127.0.0.1:8765"
+FPS = 30
+FRAME_INTERVAL = 1 / FPS

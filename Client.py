@@ -3,6 +3,8 @@ import curses
 import json
 import time
 import base64
+import os
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 
 import numpy as np
 import sounddevice as sd

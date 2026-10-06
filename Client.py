@@ -919,7 +919,10 @@ def main(stdscr):
     asyncio.run(
         curses_main(stdscr)
     )
+    
+def run():
+    curses.wrapper(main)
 
 
 if __name__ == "__main__":
-    curses.wrapper(main)
+    run()

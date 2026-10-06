@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loops"
+version = "0.1"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "opencv-python-headless",
+  "sounddevice",
+  "websockets",
+  "windows-curses; sys_platform == 'win32'",
+]
+
+[project.scripts]
+loops = "Client:run"
+
+[tool.setuptools]
+py-modules = ["Client", "Camera", "Textbox", "Messagebox", "Animation", "Config"]

@@ -18,6 +18,6 @@ CHANNELS = 1
 CHUNK_SIZE = 4000
 
 
-SERVER_URI = "wss://loops-9j0l.onrender.com"
+SERVER_URI = "ws://localhost:8765"
 FPS = 30
 FRAME_INTERVAL = 1 / FPS

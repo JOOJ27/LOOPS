@@ -6,7 +6,20 @@ import os
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
+import logging
+from websockets.exceptions import InvalidMessage
 
+
+class IgnoreProbes(logging.Filter):
+    """Esconde handshakes falhos de health check / port scan."""
+
+    def filter(self, record):
+        if record.exc_info and isinstance(record.exc_info[1], InvalidMessage):
+            return False  # descarta este registro
+        return True
+
+
+logging.getLogger("websockets.server").addFilter(IgnoreProbes())
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", 8765))

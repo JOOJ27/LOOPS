@@ -318,8 +318,8 @@ async def camera_send_loop(websocket, camera, state):
                 else:
                     if frame is None:
                         state["camera_error"] = (
-                            "sem imagem da câmera "
-                            "(em uso por outro processo?)"
+                            "No camera image "
+                            "(Another process using it)"
                         )
 
                 if frame is None:
@@ -569,9 +569,9 @@ def draw_call_screen(layout, state, box, chat):
     # Vídeo do usuário e do amigo (com placeholder)
     # -----------------------------------------------
     if state["camera_ok"] is None:
-        my_placeholder = "Iniciando câmera..."
+        my_placeholder = "Initializing camera"
     else:
-        my_placeholder = "Sem imagem da câmera"
+        my_placeholder = "No camera image"
 
     draw_ascii_lines(
         layout["me"][1],
@@ -582,7 +582,7 @@ def draw_call_screen(layout, state, box, chat):
     draw_ascii_lines(
         layout["friend"][1],
         state["friend_frame"],
-        placeholder="Aguardando vídeo do amigo...",
+        placeholder="waiting for friend image",
     )
 
     # -----------------------------------------------
@@ -778,7 +778,7 @@ async def curses_main(stdscr):
                                 elif msg == "/mic":
                                     # Alterna o estado do microfone
                                     state["mic_active"] = not state["mic_active"]
-                                    status = "ativado" if state["mic_active"] else "mutado"
+                                    status = "activated" if state["mic_active"] else "muted"
                                     chat.add_message("System", f"Microfone {status}.")
 
                                 elif msg == "/skip":
@@ -796,7 +796,7 @@ async def curses_main(stdscr):
 
                                 elif msg:
                                     chat.add_message(
-                                        "Você",
+                                        "You",
                                         msg,
                                         mine=True,
                                     )
@@ -903,7 +903,7 @@ async def curses_main(stdscr):
         if layout is not None:
             chat.add_message(
                 "System",
-                f"Não foi possível conectar: {exc}",
+                f"Not possible to connect due to: {exc}",
             )
 
             chat.draw()

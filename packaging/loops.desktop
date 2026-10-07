@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=LOOPS
-Comment=Videochamada pelo terminal
-Exec=@EXEC@
-Terminal=true
-Categories=Network;Chat;
-Icon=utilities-terminal

@@ -5,3 +5,7 @@ __pycache__/
 .pyi-build/
 build/
 *.egg-info/
+dist/
+.pyi-build/
+build/
+*.egg-info/

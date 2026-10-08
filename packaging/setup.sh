@@ -66,10 +66,10 @@ PLEOF
   WHERE="em Aplicativos (pasta ~/Applications) e no Launchpad/Spotlight: LOOPS"
   ;;
 *)
-  echo "Sistema não suportado por este instalador."; exit 1 ;;
+  echo "System not supported for this installer."; exit 1 ;;
 esac
 
 echo
-echo "✔ LOOPS instalado!"
-echo "  • Abra $WHERE"
-echo "  • Ou digite no terminal: loops   (se não achar o comando, adicione ~/.local/bin ao PATH)"
+echo "✔ LOOPS installed!"
+echo "  • Open $WHERE"
+echo "  • Or type this on terminal: loops   (if command not found, add ~/.local/bin to PATH)"

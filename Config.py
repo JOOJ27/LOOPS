@@ -15,7 +15,7 @@ CHAR_ASPECT = 0.5  # largura/altura de uma célula do terminal
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-CHUNK_SIZE = 4000
+CHUNK_SIZE = 320
 
 
 SERVER_URI = "wss://loops-9j0l.onrender.com"

@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 import sounddevice as sd
+from pywebrtc_audio import AudioProcessor
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -36,13 +37,7 @@ from Config import (
 from Animation import GLASSES_FRAMES
 
 
-# ==================================================
-# LOGS FORA DA TELA
-# ==================================================
-# Bibliotecas em C (ALSA/PortAudio, OpenCV...) escrevem direto no descritor 2
-# (stderr), por cima do curses. Redirecionamos esse descritor para um arquivo
-# enquanto o app roda; assim nada aparece na tela e os erros ficam guardados
-# em ~/.loops/loops.log para consulta.
+# Logs de bibliotecas nativas ficam em ~/.loops/loops.log.
 LOG_PATH = Path.home() / ".loops" / "loops.log"
 
 
@@ -81,12 +76,6 @@ def short_error(exc):
     return " ".join(f"{type(exc).__name__}: {exc}".split())
 
 
-# ==================================================
-# CONEXÃO COM O SERVIDOR (tenta até conseguir)
-# ==================================================
-# O plano gratuito do Render "dorme" quando fica parado e leva até ~1 min
-# para acordar. Em vez de desistir na primeira falha, o cliente mostra a tela
-# de espera com um log das tentativas e repete até o servidor responder.
 CONNECT_RETRY_DELAY = 3    # segundos entre as tentativas
 CONNECT_TIMEOUT = 20       # segundos que cada tentativa espera pela resposta
 CONNECT_LOG_KEEP = 8       # quantas linhas de log ficam guardadas
@@ -134,19 +123,9 @@ async def connect_with_retry(state):
 
 
 
-# --- CONFIGURAÇÕES DE ÁUDIO ---
-
-# Fila assíncrona para não bloquear a thread principal
-audio_send_queue = asyncio.Queue()
-
-
 # ==================================================
-# COR DO VÍDEO (fundo de cada célula)
+# COR DO VÍDEO
 # ==================================================
-# Cada célula do terminal tem duas camadas: a "tinta" (o caractere) e o
-# "papel" (a cor de fundo). O vídeo em cor pinta o papel de cada célula com a
-# cor do pixel (o caractere vira um espaço), então a imagem vira um mosaico.
-# Os índices (16..255 da paleta xterm-256) viajam comprimidos junto do quadro.
 
 def encode_colors(colors):
     return base64.b64encode(zlib.compress(colors.tobytes(), 1)).decode("ascii")
@@ -242,7 +221,7 @@ def create_layout(stdscr):
             W,
             0,
             0,
-            "Nerd info",
+            "Status",
             2,
         ),
         "friend": make_panel(
@@ -297,7 +276,7 @@ def create_waiting_layout(stdscr):
             W,
             0,
             0,
-            "Nerd info",
+            "Status",
             2,
             True
         ),
@@ -441,12 +420,7 @@ async def send_json(websocket, message_type, **data):
         )
     )
 
-# ==================================================
-# FORMATO DE ÁUDIO: o que o driver aceita x o que a rede usa
-# ==================================================
-# Na rede o áudio é sempre 16 kHz mono (SAMPLE_RATE). Muitas placas de som só
-# aceitam 44,1/48 kHz e/ou estéreo ("Invalid sample rate [PaErrorCode -9997]").
-# Então testamos combinações até o driver aceitar e convertemos a taxa.
+# A rede usa 16 kHz mono; o cliente converte para o formato aceito pelo dispositivo.
 
 class Resampler:
     """Reamostra áudio mono em blocos (interpolação linear + filtro anti-aliasing).
@@ -553,32 +527,32 @@ def open_audio_stream(kind, make_stream):
 
     # Diagnóstico para ~/.loops/loops.log (stderr não aparece na tela)
     try:
-        print(f"[audio:{kind}] dispositivos:\n{sd.query_devices()}", file=sys.stderr)
+        print(f"[audio:{kind}] devices:\n{sd.query_devices()}", file=sys.stderr)
     except Exception as exc:
-        print(f"[audio:{kind}] não consegui listar dispositivos: {exc}", file=sys.stderr)
+        print(f"[audio:{kind}] could not list devices: {exc}", file=sys.stderr)
 
     for device, rate, channels in audio_candidates(kind):
         tried += 1
         try:
             stream = make_stream(device, rate, channels)
             print(
-                f"[audio:{kind}] OK: dispositivo={device} {rate} Hz {channels} canal(is)",
+                f"[audio:{kind}] OK: device={device} {rate} Hz {channels} channel(s)",
                 file=sys.stderr,
             )
             return (stream, rate, channels)
         except Exception as exc:
             print(
-                f"[audio:{kind}] falhou: dispositivo={device} {rate} Hz "
-                f"{channels} canal(is): {short_error(exc)}",
+                f"[audio:{kind}] failed: device={device} {rate} Hz "
+                f"{channels} channel(s): {short_error(exc)}",
                 file=sys.stderr,
             )
             if first_error is None:
                 first_error = exc
 
     if first_error is None:
-        raise RuntimeError("nenhum dispositivo de áudio encontrado")
+        raise RuntimeError("no audio device found")
 
-    message = f"{first_error} (tentei {tried} combinações)"
+    message = f"{first_error} (tried {tried} combinations)"
 
     try:
         error = type(first_error)(message)
@@ -595,17 +569,6 @@ def rate_note(rate):
     return f" ({rate / 1000:g}k)"
 
 
-# ==================================================
-# REPRODUÇÃO DO ÁUDIO (buffer de jitter + callback)
-# ==================================================
-# Por que não usar stream.write()? Ele BLOQUEIA até a placa tocar o som. Dentro
-# do asyncio isso prende o programa inteiro (tela, teclado, vídeo) e, pior: o
-# recebimento passa a andar exatamente na velocidade do áudio e nunca "alcança"
-# a fila, então nem devolve o controle ao loop. Além disso, sem colchão, qualquer
-# pacote atrasado da rede vira um buraco de som (estalo/chiado).
-#
-# Aqui o PortAudio chama o callback (em outra thread) quando a placa precisa de
-# som; o asyncio só deposita os blocos recebidos num buffer e segue a vida.
 PLAY_MIN_BUFFER = 0.10     # s de colchão antes de começar a tocar
 PLAY_STEP_UP = 0.04        # s a mais de colchão a cada falha de som
 PLAY_CAP = 0.50            # s: colchão máximo
@@ -613,11 +576,47 @@ PLAY_MAX_EXTRA = 0.30      # s acima do colchão; além disso descarta o mais an
 FADE_FRAMES = 48           # suaviza o corte quando o som acaba (evita estalo)
 
 
+class EchoReferenceBuffer:
+    def __init__(self, max_seconds=2):
+        self._lock = threading.Lock()
+        self._chunks = collections.deque()
+        self._frames = 0
+        self._max_frames = SAMPLE_RATE * max_seconds
+
+    def write(self, samples):
+        samples = np.asarray(samples, dtype=np.int16).reshape(-1).copy()
+        if not len(samples):
+            return
+        with self._lock:
+            self._chunks.append(samples)
+            self._frames += len(samples)
+            while self._frames > self._max_frames and self._chunks:
+                self._frames -= len(self._chunks.popleft())
+
+    def read(self, frames):
+        out = np.zeros(frames, dtype=np.int16)
+        pos = 0
+        with self._lock:
+            while pos < frames and self._chunks:
+                chunk = self._chunks[0]
+                count = min(frames - pos, len(chunk))
+                out[pos:pos + count] = chunk[:count]
+                pos += count
+                self._frames -= count
+                if count == len(chunk):
+                    self._chunks.popleft()
+                else:
+                    self._chunks[0] = chunk[count:]
+        return out
+
+
 class AudioPlayer:
-    def __init__(self, device, rate, channels):
+    def __init__(self, device, rate, channels, echo_reference):
         self.rate = rate
         self.channels = channels
+        self.echo_reference = echo_reference
         self.resampler = Resampler(SAMPLE_RATE, rate) if rate != SAMPLE_RATE else None
+        self.echo_resampler = Resampler(rate, SAMPLE_RATE) if rate != SAMPLE_RATE else None
 
         self._lock = threading.Lock()
         self._chunks = collections.deque()      # blocos (frames, canais) int16
@@ -686,6 +685,7 @@ class AudioPlayer:
                     fade_in = True
                 else:
                     outdata.fill(0)
+                    self._write_echo_reference(outdata)
                     return
 
             while pos < frames and self._chunks:
@@ -731,6 +731,17 @@ class AudioPlayer:
         elif pos > 0:
             self._last = outdata[pos - 1].astype(np.float32)
 
+        self._write_echo_reference(outdata)
+
+    def _write_echo_reference(self, outdata):
+        if self.channels == 1:
+            mono = outdata[:, 0]
+        else:
+            mono = outdata.astype(np.int32).mean(axis=1).astype(np.int16)
+        if self.echo_resampler is not None:
+            mono = np.clip(self.echo_resampler.process(mono), -32768, 32767).astype(np.int16)
+        self.echo_reference.write(mono)
+
     def alive(self):
         try:
             return bool(self.stream.active)
@@ -745,8 +756,8 @@ class AudioPlayer:
             pass
 
         print(
-            f"[audio:output] reprodução: {self.underruns} falhas de som, "
-            f"{self.dropped} amostras descartadas, colchão final "
+            f"[audio:output] playback: {self.underruns} underruns, "
+            f"{self.dropped} samples dropped, final buffer "
             f"{self._goal() * 1000 // self.rate} ms",
             file=sys.stderr,
         )
@@ -763,23 +774,16 @@ def link_congested(websocket, limit=32_000):
         return False
 
 
-# ==================================================
-# ÁUDIO CALLBACKS
-# ==================================================
-def audio_callback(indata, frames, time_info, status):
-    if status:
-        pass
-    audio_int16 = (indata * 32767).astype(np.int16)
-    audio_bytes = audio_int16.tobytes()
-    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-    
-    loop = asyncio.get_event_loop()
-    loop.call_soon_threadsafe(audio_send_queue.put_nowait, audio_b64)
-
-
 async def audio_send_loop(websocket, state):
     loop = asyncio.get_running_loop()
     audio_send_queue = asyncio.Queue()
+    echo_reference = state["echo_reference"]
+    echo_processor = AudioProcessor(
+        sample_rate=SAMPLE_RATE,
+        num_channels=1,
+        echo_cancellation=True,
+        stream_delay_ms=80,
+    )
 
     def make_input(device, rate, channels):
         resampler = (
@@ -799,11 +803,16 @@ async def audio_send_loop(websocket, state):
                     mono = resampler.process(mono)
 
                 audio_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
+                try:
+                    audio_int16 = echo_processor.process(
+                        audio_int16,
+                        echo_reference.read(len(audio_int16)),
+                    )
+                except Exception:
+                    pass
                 audio_bytes = audio_int16.tobytes()
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-                # O callback roda em outra thread, então usamos
-                # call_soon_threadsafe para voltar ao event loop principal.
                 loop.call_soon_threadsafe(
                     audio_send_queue.put_nowait,
                     audio_b64
@@ -817,7 +826,6 @@ async def audio_send_loop(websocket, state):
             channels=channels,
             dtype="float32",
             callback=audio_callback,
-            # mesmo tempo de bloco (250 ms) em qualquer taxa
             blocksize=max(1, round(CHUNK_SIZE * rate / SAMPLE_RATE)),
         )
         stream.start()
@@ -893,8 +901,8 @@ async def camera_send_loop(websocket, camera, state):
                 else:
                     if result is None:
                         state["camera_error"] = (
-                            "sem imagem da câmera "
-                            "(em uso por outro processo?)"
+                            "no camera image "
+                            "(is it in use by another process?)"
                         )
                     else:
                         frame, colors = result
@@ -942,7 +950,7 @@ async def receive_loop(websocket, chat, state):
     player = None
 
     def make_output(device, rate, channels):
-        return AudioPlayer(device, rate, channels)
+        return AudioPlayer(device, rate, channels, state["echo_reference"])
 
     try:
         player, out_rate, _ = open_audio_stream("output", make_output)
@@ -956,7 +964,7 @@ async def receive_loop(websocket, chat, state):
         state["audio_out_error"] = short_error(exc)
         chat.add_message(
             "System",
-            f"Sem saída de áudio: {state['audio_out_error']}",
+            f"No audio output: {state['audio_out_error']}",
         )
 
     last_alive_check = time.monotonic()
@@ -996,7 +1004,7 @@ async def receive_loop(websocket, chat, state):
                     player = None
                     chat.add_message(
                         "System",
-                        f"Saída de áudio parou: {state['audio_out_error']}",
+                        f"Audio output stopped: {state['audio_out_error']}",
                     )
                     continue
 
@@ -1007,12 +1015,12 @@ async def receive_loop(websocket, chat, state):
 
                     if not player.alive():
                         state["audio_out_ok"] = False
-                        state["audio_out_error"] = "dispositivo de áudio parou"
+                        state["audio_out_error"] = "audio device stopped"
                         player.close()
                         player = None
                         chat.add_message(
                             "System",
-                            "Saída de áudio parou: dispositivo de áudio parou",
+                            "Audio output stopped: audio device stopped",
                         )
 
             elif message_type == "video":
@@ -1177,7 +1185,7 @@ def draw_waiting_screen(layout, state, frame_index):
         text = f"Trying to connect to server{dots}"
     else:
         text = (
-            "Trying to match u "
+            "Trying to match you "
             f"with someone{dots}"
         )
 
@@ -1244,9 +1252,9 @@ def draw_call_screen(layout, state, box, chat):
     # Vídeo do usuário e do amigo (com placeholder)
     # -----------------------------------------------
     if state["camera_ok"] is None:
-        my_placeholder = "Iniciando câmera..."
+        my_placeholder = "Starting camera..."
     else:
-        my_placeholder = "Sem imagem da câmera"
+        my_placeholder = "No camera image"
 
     draw_ascii_lines(
         layout["me"][1],
@@ -1260,7 +1268,7 @@ def draw_call_screen(layout, state, box, chat):
     draw_ascii_lines(
         layout["friend"][1],
         state["friend_frame"],
-        placeholder="Aguardando vídeo do amigo...",
+        placeholder="Waiting for friend's video...",
         title="Friend",
         pair=3,
         colors=state["friend_colors"] if state["color_ok"] else None,
@@ -1276,25 +1284,25 @@ def draw_call_screen(layout, state, box, chat):
     _, logs_w = logs_win.getmaxyx()
 
     camera_status = {
-        None: "iniciando",
+        None: "starting",
         True: "OK",
-        False: "ERRO",
+        False: "ERROR",
     }[state["camera_ok"]]
 
     mic_status = "ON" if state["mic_active"] else "MUTED"
     if state["audio_in_ok"] is False:
-        mic_status = "ERRO"
+        mic_status = "ERROR"
     elif logs_w >= 72:
         mic_status += rate_note(state["audio_in_rate"])
 
     audio_out_status = {
-        None: "iniciando",
+        None: "starting",
         True: "OK",
-        False: "ERRO",
+        False: "ERROR",
     }[state["audio_out_ok"]]
 
     # Em terminais estreitos usa o rótulo curto para a linha caber.
-    audio_label = "Saída de áudio" if logs_w >= 72 else "Som"
+    audio_label = "Audio output" if logs_w >= 72 else "Audio"
 
     if state["audio_out_ok"] and logs_w >= 72:
         audio_out_status += rate_note(state["audio_out_rate"])
@@ -1304,7 +1312,7 @@ def draw_call_screen(layout, state, box, chat):
     parts = [
         f"{ws_label}: "
         + ("CONNECTED" if state["connected"] else "DISCONNECTED"),
-        f"Câmera: {camera_status}",
+        f"Camera: {camera_status}",
         f"Mic: {mic_status}",
         f"{audio_label}: {audio_out_status}",
     ]
@@ -1422,7 +1430,8 @@ async def curses_main(stdscr):
         "camera_ok": None,       # None = ainda iniciando
         "camera_error": None,
         
-        "mic_active": True,      # Começa com o microfone ativado
+        "mic_active": True,
+        "echo_reference": EchoReferenceBuffer(),
 
         "audio_in_ok": None,     # None = ainda iniciando
         "audio_in_error": None,
@@ -1466,7 +1475,7 @@ async def curses_main(stdscr):
                     stdscr.erase()
 
                     try:
-                        stdscr.addstr(0, 0, "Terminal too small")
+                        stdscr.addstr(0, 0, "Terminal is too small")
                     except curses.error:
                         pass
 
@@ -1565,18 +1574,18 @@ async def curses_main(stdscr):
                                     if not state["color_ok"]:
                                         chat.add_message(
                                             "System",
-                                            "Seu terminal não suporta 256 cores.",
+                                            "Your terminal does not support 256 colors.",
                                         )
                                     else:
                                         my_video.COLOR = not my_video.COLOR
-                                        status = "ativadas" if my_video.COLOR else "desativadas"
-                                        chat.add_message("System", f"Cores {status}.")
+                                        status = "enabled" if my_video.COLOR else "disabled"
+                                        chat.add_message("System", f"Colors {status}.")
 
                                 elif msg == "/mic":
                                     # Alterna o estado do microfone
                                     state["mic_active"] = not state["mic_active"]
-                                    status = "ativado" if state["mic_active"] else "mutado"
-                                    chat.add_message("System", f"Microfone {status}.")
+                                    status = "enabled" if state["mic_active"] else "muted"
+                                    chat.add_message("System", f"Microphone {status}.")
 
                                 elif msg == "/skip":
                                     # Envia o pedido de skip para o servidor
@@ -1594,7 +1603,7 @@ async def curses_main(stdscr):
 
                                 elif msg:
                                     chat.add_message(
-                                        "Você",
+                                        "You",
                                         msg,
                                         mine=True,
                                     )
@@ -1621,7 +1630,7 @@ async def curses_main(stdscr):
                             stdscr.addstr(
                                 0,
                                 0,
-                                "Terminal too small",
+                                "Terminal is too small",
                             )
                         except curses.error:
                             pass
@@ -1702,7 +1711,7 @@ async def curses_main(stdscr):
         if layout is not None:
             chat.add_message(
                 "System",
-                f"Não foi possível conectar: {exc}",
+                f"Could not connect: {exc}",
             )
 
             chat.draw()

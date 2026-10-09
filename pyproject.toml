@@ -10,6 +10,7 @@ dependencies = [
   "numpy",
   "opencv-python-headless",
   "sounddevice",
+  "pywebrtc-audio>=0.2.0,<0.3",
   "websockets",
   "windows-curses; sys_platform == 'win32'",
 ]

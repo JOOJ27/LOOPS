@@ -23,7 +23,7 @@ class TextBox:
         box.draw()
     """
 
-    def __init__(self, win, placeholder="Digite sua mensagem...", max_length=500):
+    def __init__(self, win, placeholder="Type your message...", max_length=500):
         self.win = win
         self.placeholder = placeholder
         self.max_length = max_length

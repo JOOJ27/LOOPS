@@ -11,8 +11,8 @@ class ChatBox:
     Uso:
         chat = ChatBox(layout["chat"][1])
 
-        chat.add_message("Você", "oi!", mine=True)    # mensagem enviada por você
-        chat.add_message("Pessoa 2", "tudo bem?")      # mensagem recebida
+        chat.add_message("You", "Hi!", mine=True)
+        chat.add_message("Friend", "How are you?")
 
         chat.draw()                                    # a cada ciclo do loop
 
@@ -22,6 +22,7 @@ class ChatBox:
 
     PAIR_ME = 10       # ids dos pares de cor (altos para não colidir com os seus)
     PAIR_OTHER = 11
+    PAIR_SYSTEM = 12
 
     def __init__(self, win, max_messages=200, show_time=False):
         self.win = win
@@ -98,6 +99,7 @@ class ChatBox:
     def _init_colors(self):
         self.attr_me = curses.A_BOLD
         self.attr_other = curses.A_BOLD
+        self.attr_system = curses.A_BOLD
         if not curses.has_colors():
             return
         try:
@@ -105,8 +107,10 @@ class ChatBox:
             curses.use_default_colors()
             curses.init_pair(self.PAIR_ME, curses.COLOR_GREEN, -1)
             curses.init_pair(self.PAIR_OTHER, curses.COLOR_CYAN, -1)
+            curses.init_pair(self.PAIR_SYSTEM, curses.COLOR_RED, -1)
             self.attr_me = curses.color_pair(self.PAIR_ME) | curses.A_BOLD
             self.attr_other = curses.color_pair(self.PAIR_OTHER) | curses.A_BOLD
+            self.attr_system = curses.color_pair(self.PAIR_SYSTEM) | curses.A_BOLD
         except curses.error:
             pass
 
@@ -119,14 +123,19 @@ class ChatBox:
             indent = len(head_author)
 
             parts = textwrap.wrap(text, width=max(1, w - indent), break_long_words=True) or [""]
-            name_attr = self.attr_me if mine else self.attr_other
+            name_attr = (
+                self.attr_system if author == "System"
+                else self.attr_me if mine
+                else self.attr_other
+            )
+            text_attr = self.attr_system if author == "System" else curses.A_NORMAL
 
             # primeira linha: hora + autor + início do texto
             lines.append([
                 (head_author, name_attr),
-                (parts[0], curses.A_NORMAL),
+                (parts[0], text_attr),
             ])
             # continuação: alinhada com o começo do texto
             for p in parts[1:]:
-                lines.append([(" " * indent, curses.A_NORMAL), (p, curses.A_NORMAL)])
+                lines.append([(" " * indent, text_attr), (p, text_attr)])
         return lines

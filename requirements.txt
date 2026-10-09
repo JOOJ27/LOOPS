@@ -1,3 +1,4 @@
 websockets>=16,<17
 opencv-python
 numpy
+pywebrtc-audio>=0.2.0,<0.3

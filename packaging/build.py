@@ -67,6 +67,7 @@ def run_pyinstaller():
         "--hidden-import", "Textbox", "--hidden-import", "Messagebox",
         "--hidden-import", "Animation", "--hidden-import", "Config",
         "--collect-all", "sounddevice",
+        "--collect-all", "pywebrtc_audio",
         "--collect-submodules", "websockets",
     ]
     if SYSTEM == "Windows":

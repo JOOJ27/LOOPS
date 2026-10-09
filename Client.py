@@ -569,10 +569,11 @@ def rate_note(rate):
     return f" ({rate / 1000:g}k)"
 
 
-PLAY_MIN_BUFFER = 0.10     # s de colchão antes de começar a tocar
-PLAY_STEP_UP = 0.04        # s a mais de colchão a cada falha de som
-PLAY_CAP = 0.50            # s: colchão máximo
+PLAY_MIN_BUFFER = 0.18     # s de colchão antes de começar a tocar
+PLAY_STEP_UP = 0.06        # s a mais de colchão a cada falha de som
+PLAY_CAP = 0.60            # s: colchão máximo
 PLAY_MAX_EXTRA = 0.30      # s acima do colchão; além disso descarta o mais antigo
+PLAY_STABLE_RECOVERY = 8   # segundos estáveis antes de reduzir o colchão
 FADE_FRAMES = 48           # suaviza o corte quando o som acaba (evita estalo)
 
 
@@ -626,7 +627,9 @@ class AudioPlayer:
         self._last = None                       # último frame tocado (para o fade-out)
         self._target = int(PLAY_MIN_BUFFER * rate)
         self._chunk_frames = 0                  # tamanho típico dos blocos que chegam
+        self._stable_frames = 0
         self.underruns = 0
+        self.device_underruns = 0
         self.dropped = 0
 
         self.stream = sd.OutputStream(
@@ -678,6 +681,9 @@ class AudioPlayer:
         fade_in = False
         pos = 0
 
+        if status and status.output_underflow:
+            self.device_underruns += 1
+
         with self._lock:
             if not self._playing:
                 if self._buffered >= self._goal():
@@ -707,11 +713,21 @@ class AudioPlayer:
                 outdata[pos:] = 0
                 self._playing = False
                 self.underruns += 1
+                self._stable_frames = 0
                 # a rede está instável: aumenta o colchão
                 self._target = min(
                     self._target + int(PLAY_STEP_UP * self.rate),
                     int(PLAY_CAP * self.rate),
                 )
+            elif pos > 0:
+                self._stable_frames += pos
+                recovery_frames = PLAY_STABLE_RECOVERY * self.rate
+                if self._stable_frames >= recovery_frames:
+                    self._target = max(
+                        int(PLAY_MIN_BUFFER * self.rate),
+                        self._target - int(PLAY_STEP_UP * self.rate),
+                    )
+                    self._stable_frames %= recovery_frames
 
         if fade_in:
             k = min(frames, FADE_FRAMES)
@@ -757,7 +773,9 @@ class AudioPlayer:
 
         print(
             f"[audio:output] playback: {self.underruns} underruns, "
-            f"{self.dropped} samples dropped, final buffer "
+            f"{self.device_underruns} device underruns, "
+            f"{self.dropped} samples "
+            f"({self.dropped * 1000 // self.rate} ms) dropped, final buffer "
             f"{self._goal() * 1000 // self.rate} ms",
             file=sys.stderr,
         )

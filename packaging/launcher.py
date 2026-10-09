@@ -1,10 +1,10 @@
 """
-Ponto de entrada do executável do LOOPS.
+LOOPS executable entry point.
 
-- Se já estiver num terminal (TTY): roda a aplicação direto.
-- Se foi aberto com duplo clique (sem terminal): abre um terminal
-  (Terminal.app no Mac, gnome-terminal/konsole/xterm... no Linux,
-  nova janela de console no Windows) e roda a si mesmo lá dentro.
+- If already running in a terminal (TTY), start the app directly.
+- If opened by double-click without a terminal, open one
+  (Terminal.app on Mac, gnome-terminal/konsole/xterm on Linux,
+  or a new console window on Windows) and relaunch the app there.
 """
 import os
 import sys
@@ -87,8 +87,8 @@ def _open_terminal_and_exit():
         ok = _relaunch_linux(cmd)
 
     if not ok:
-        msg = ("LOOPS precisa de um terminal e não encontrei nenhum.\n"
-               "Abra um terminal e rode o programa por lá.")
+        msg = ("LOOPS requires a terminal, but none could be found.\n"
+               "Open a terminal and run the program from there.")
         if shutil.which("zenity"):
             subprocess.call(["zenity", "--error", "--text", msg])
         elif shutil.which("notify-send"):
@@ -101,9 +101,9 @@ def _open_terminal_and_exit():
 # ------------------------------------------------------------- PortAudio
 def _fix_portaudio_linux():
     """
-    No Linux o sounddevice não traz o PortAudio dentro da wheel.
-    O build embute libportaudio.so.2 no executável; aqui avisamos o
-    sounddevice onde ele está (precisa rodar ANTES de importar sounddevice).
+    On Linux, sounddevice does not bundle PortAudio in its wheel.
+    The build embeds libportaudio.so.2 in the executable; point sounddevice
+    to it here (this must run BEFORE importing sounddevice).
     """
     if platform.system() != "Linux" or not getattr(sys, "frozen", False):
         return
@@ -111,11 +111,10 @@ def _fix_portaudio_linux():
     if not base:
         return
 
-    # libasound: preferir a do SISTEMA. A cópia embutida vem da máquina de build
-    # (outra versão) e quebra os plugins ALSA do sistema (pipewire/pulse), que são
-    # justamente os que convertem a taxa de amostragem; sem eles só sobram
-    # dispositivos de hardware "crus" ("Invalid sample rate"). Só mantém a
-    # embutida se o sistema não tiver nenhuma.
+    # Prefer the system libasound. The bundled copy comes from the build machine
+    # and can break system ALSA plugins (pipewire/pulse), which convert sample
+    # rates. Without them, only raw hardware devices remain ("Invalid sample rate").
+    # Keep the bundled copy only when the system has no libasound.
     system_dirs = (
         "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu", "/lib/aarch64-linux-gnu",
@@ -141,7 +140,7 @@ def _fix_portaudio_linux():
 
 # ------------------------------------------------------------------ main
 def main():
-    # Duplo clique / sem terminal → abre um terminal e reexecuta lá
+    # Double-click / no terminal → open a terminal and relaunch there.
     if not _has_tty() and not os.environ.get(ENV_FLAG):
         _open_terminal_and_exit()
 
@@ -156,10 +155,10 @@ def main():
     except Exception:
         import traceback
         traceback.print_exc()
-        # Mantém a janela aberta para dar tempo de ler o erro
+        # Keep the window open so the error can be read.
         if os.environ.get(ENV_FLAG):
             try:
-                input("\nPressione Enter para fechar...")
+                input("\nPress Enter to close...")
             except EOFError:
                 pass
         sys.exit(1)

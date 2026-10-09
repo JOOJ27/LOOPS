@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Gera o executável do LOOPS para o sistema operacional em que está rodando.
+Build the LOOPS executable for the current operating system.
 
-    pip install pyinstaller -r requirements.txt   (ou: pip install .)
+    pip install pyinstaller -r requirements.txt   (or: pip install .)
     python packaging/build.py
 
 Resultado em dist/:
   Linux   -> loops-linux-<arch>.tar.gz   (binário + install.sh + loops.desktop)
   macOS   -> loops-macos-<arch>.zip      (binário + LOOPS.command)
   Windows -> loops-windows-<arch>.exe
-PyInstaller NÃO faz cross-compile: precisa rodar em cada SO (o workflow do
-GitHub Actions já faz isso).
+PyInstaller does not cross-compile: this must run on each OS (the GitHub Actions
+workflow already does this).
 """
 import os
 import sys
@@ -32,10 +32,10 @@ ARCH = platform.machine().lower().replace("x86_64", "x64").replace("amd64", "x64
 
 
 def find_portaudio_linux():
-    """Acha o caminho completo da libportaudio.so.2 instalada no sistema."""
+    """Find the full path to the system-installed libportaudio.so.2."""
     name = ctypes.util.find_library("portaudio")        # ex.: 'libportaudio.so.2'
     if not name:
-        sys.exit("libportaudio não encontrada. No Ubuntu: sudo apt install libportaudio2")
+        sys.exit("libportaudio was not found. On Ubuntu, run: sudo apt install libportaudio2")
     if os.path.isabs(name):
         return name
     out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
@@ -46,7 +46,7 @@ def find_portaudio_linux():
         p = Path(d) / name
         if p.exists():
             return str(p)
-    sys.exit(f"Não consegui localizar {name}")
+    sys.exit(f"Could not locate {name}")
 
 
 def run_pyinstaller():
@@ -82,7 +82,7 @@ def package():
     binname = "loops.exe" if SYSTEM == "Windows" else "loops"
     binary = DIST / "bin" / binname
     if not binary.exists():
-        sys.exit("Build falhou: binário não encontrado")
+        sys.exit("Build failed: executable not found")
 
     if SYSTEM == "Windows":
         shutil.copy(binary, DIST / f"loops-windows-{ARCH}.exe")
@@ -109,7 +109,7 @@ def package():
         out = DIST / f"loops-linux-{ARCH}.tar.gz"
         with tarfile.open(out, "w:gz") as tar:
             tar.add(stage, arcname="loops")
-    print("Gerado:", out)
+    print("Generated:", out)
 
 
 if __name__ == "__main__":

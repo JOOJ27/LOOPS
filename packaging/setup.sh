@@ -1,6 +1,6 @@
 #!/bin/sh
-# Instala o LOOPS para o usuário atual (sem sudo), com ícone e atalho.
-# Funciona em Linux e macOS. Rode a partir da pasta extraída: ./setup.sh
+# Install LOOPS for the current user (without sudo), with an icon and shortcut.
+# Works on Linux and macOS. Run from the extracted folder: ./setup.sh
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$HOME/.local/opt/loops"
@@ -16,7 +16,7 @@ Linux)
   mkdir -p "$APPS_DIR"
   cp "$HERE/icon.png" "$APP_DIR/icon.png"
 
-  # Terminal=true faz o sistema abrir um terminal ao clicar no atalho
+  # Terminal=true opens a terminal when the shortcut is clicked.
   sed -e "s|@EXEC@|$APP_DIR/loops|g" -e "s|@ICON@|$APP_DIR/icon.png|g" \
       "$HERE/loops.desktop" > "$APPS_DIR/loops.desktop"
   chmod 755 "$APPS_DIR/loops.desktop"
@@ -28,7 +28,7 @@ Linux)
     gio set "$DESKTOP_DIR/LOOPS.desktop" metadata::trusted true 2>/dev/null || true
   fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
-  WHERE="no menu de aplicativos (procure por LOOPS)"
+  WHERE="the applications menu (search for LOOPS)"
   ;;
 Darwin)
   APP="$HOME/Applications/LOOPS.app"
@@ -36,7 +36,7 @@ Darwin)
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   cp "$HERE/icon.icns" "$APP/Contents/Resources/loops.icns"
 
-  # O "app" só pede para o Terminal abrir o executável do LOOPS
+  # The app asks Terminal to open the LOOPS executable.
   cat > "$APP/Contents/MacOS/LOOPS" <<APPEOF
 #!/bin/sh
 exec open -a Terminal "$APP_DIR/loops"
@@ -60,10 +60,10 @@ APPEOF
 </dict>
 </plist>
 PLEOF
-  # Remove a marca de "baixado da internet" (evita o aviso do Gatekeeper)
+  # Remove the downloaded-from-the-internet quarantine flag to avoid Gatekeeper warnings.
   xattr -dr com.apple.quarantine "$APP" "$APP_DIR/loops" 2>/dev/null || true
   touch "$APP"
-  WHERE="em Aplicativos (pasta ~/Applications) e no Launchpad/Spotlight: LOOPS"
+  WHERE="Applications (~/Applications) and Launchpad/Spotlight: LOOPS"
   ;;
 *)
   echo "System not supported for this installer."; exit 1 ;;
@@ -72,4 +72,4 @@ esac
 echo
 echo "✔ LOOPS installed!"
 echo "  • Open $WHERE"
-echo "  • Or type this on terminal: loops   (if command not found, add ~/.local/bin to PATH)"
+echo "  • Or run this in a terminal: loops (if not found, add ~/.local/bin to PATH)"

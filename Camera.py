@@ -8,7 +8,6 @@ import numpy as np
 
 from Config import(
     CHAR_ASPECT,
-    KERNEL
 )
 
 locale.setlocale(locale.LC_ALL, '')
@@ -72,8 +71,8 @@ class Camera:
             return None
 
         frame = cv2.flip(frame, 1)
-        sharp = cv2.filter2D(frame, -1, KERNEL)
-
+        blur = cv2.GaussianBlur(frame, (0, 0), 1.0)
+        sharp = cv2.addWeighted(frame, 1.3, blur, -0.3, 0)
         gray = cv2.cvtColor(sharp, cv2.COLOR_BGR2GRAY)
         fh, fw = gray.shape
 

@@ -30,6 +30,9 @@ from Config import (
     SAMPLE_RATE,
     CHANNELS, 
     CHUNK_SIZE,
+    MIC_LIMIT_PEAK,
+    MIC_LIMIT_RELEASE_SECONDS,
+    MIC_SEND_QUEUE_CHUNKS,
     SERVER_URI,
     FRAME_INTERVAL,
 )
@@ -648,6 +651,77 @@ class EchoReferenceBuffer:
         return out
 
 
+class MicLimiter:
+    """Prevent hot microphone samples from hard-clipping during PCM conversion."""
+
+    def __init__(self, sample_rate, target_peak, release_seconds):
+        self.sample_rate = sample_rate
+        self.target_peak = target_peak
+        self.release_seconds = release_seconds
+        self.gain = 1.0
+        self.last_input_peak = 0.0
+        self.last_output_peak = 0.0
+
+    def process(self, samples):
+        samples = np.asarray(samples, dtype=np.float32)
+        if not len(samples):
+            return samples
+
+        peak = float(np.max(np.abs(samples)))
+        self.last_input_peak = peak
+        target_gain = min(1.0, self.target_peak / peak) if peak > 0 else 1.0
+
+        if target_gain < self.gain:
+            # Fast attack keeps an over-range block below full scale.
+            self.gain = target_gain
+        else:
+            # Gradual recovery avoids sudden volume jumps after loud blocks.
+            alpha = 1.0 - np.exp(
+                -len(samples) / (self.sample_rate * self.release_seconds)
+            )
+            self.gain += (target_gain - self.gain) * alpha
+
+        limited = samples * self.gain
+        self.last_output_peak = float(np.max(np.abs(limited)))
+        return limited
+
+
+class AudioSendBuffer:
+    """Bounded thread-to-async bridge that keeps the newest microphone audio."""
+
+    def __init__(self, loop, max_chunks):
+        self.loop = loop
+        self.max_chunks = max_chunks
+        self._chunks = collections.deque()
+        self._lock = threading.Lock()
+        self._ready = asyncio.Event()
+        self._wakeup_pending = False
+        self.dropped = 0
+
+    def put_from_audio_thread(self, chunk):
+        schedule_wakeup = False
+        with self._lock:
+            if len(self._chunks) >= self.max_chunks:
+                self._chunks.popleft()
+                self.dropped += 1
+            self._chunks.append(chunk)
+            if not self._wakeup_pending:
+                self._wakeup_pending = True
+                schedule_wakeup = True
+
+        if schedule_wakeup:
+            self.loop.call_soon_threadsafe(self._ready.set)
+
+    async def get(self):
+        while True:
+            await self._ready.wait()
+            with self._lock:
+                if self._chunks:
+                    return self._chunks.popleft()
+                self._wakeup_pending = False
+                self._ready.clear()
+
+
 class AudioPlayer:
     def __init__(self, device, rate, channels, echo_reference):
         self.rate = rate
@@ -668,6 +742,9 @@ class AudioPlayer:
         self.underruns = 0
         self.device_underruns = 0
         self.dropped = 0
+        self.wire_samples = 0
+        self.wire_fullscale_samples = 0
+        self.wire_peak = 0
 
         self.stream = sd.OutputStream(
             device=device,
@@ -687,7 +764,14 @@ class AudioPlayer:
 
     def push(self, samples):
         """Recebe áudio na taxa da rede (16 kHz, mono, int16)."""
-        x = samples
+        x = np.asarray(samples, dtype=np.int16).reshape(-1)
+        if not len(x):
+            return
+
+        abs_samples = np.abs(x.astype(np.int32))
+        self.wire_samples += len(x)
+        self.wire_fullscale_samples += int(np.count_nonzero(abs_samples >= 32767))
+        self.wire_peak = max(self.wire_peak, int(np.max(abs_samples)))
 
         if self.resampler is not None:
             x = np.clip(self.resampler.process(x), -32768, 32767).astype(np.int16)
@@ -813,7 +897,9 @@ class AudioPlayer:
             f"{self.device_underruns} device underruns, "
             f"{self.dropped} samples "
             f"({self.dropped * 1000 // self.rate} ms) dropped, final buffer "
-            f"{self._goal() * 1000 // self.rate} ms",
+            f"{self._goal() * 1000 // self.rate} ms, wire peak "
+            f"{self.wire_peak}/32768, {self.wire_fullscale_samples}/"
+            f"{self.wire_samples} full-scale samples",
             file=sys.stderr,
         )
 
@@ -831,8 +917,11 @@ def link_congested(websocket, limit=32_000):
 
 async def audio_send_loop(websocket, state):
     loop = asyncio.get_running_loop()
-    audio_send_queue = asyncio.Queue()
+    audio_send_queue = AudioSendBuffer(loop, MIC_SEND_QUEUE_CHUNKS)
     echo_reference = state["echo_reference"]
+    mic_stats = collections.Counter()
+    mic_errors = {}
+    sent_chunks = 0
     echo_processor = AudioProcessor(
         sample_rate=SAMPLE_RATE,
         num_channels=1,
@@ -846,10 +935,19 @@ async def audio_send_loop(websocket, state):
             if rate != SAMPLE_RATE
             else None
         )
+        limiter = MicLimiter(
+            SAMPLE_RATE,
+            MIC_LIMIT_PEAK,
+            MIC_LIMIT_RELEASE_SECONDS,
+        )
 
         def audio_callback(indata, frames, time_info, status):
+            started = time.perf_counter()
+            mic_stats["callbacks"] += 1
             if status:
-                pass
+                mic_stats["status_events"] += 1
+                if getattr(status, "input_overflow", False):
+                    mic_stats["input_overflows"] += 1
 
             try:
                 mono = indata[:, 0] if channels == 1 else indata.mean(axis=1)
@@ -857,23 +955,50 @@ async def audio_send_loop(websocket, state):
                 if resampler is not None:
                     mono = resampler.process(mono)
 
+                mono = np.asarray(mono, dtype=np.float32)
+                mic_stats["input_overrange_samples"] += int(
+                    np.count_nonzero(np.abs(mono) >= 1.0)
+                )
+                mono = limiter.process(mono)
+                mic_stats["max_input_peak"] = max(
+                    mic_stats.get("max_input_peak", 0.0),
+                    limiter.last_input_peak,
+                )
+                mic_stats["max_limited_peak"] = max(
+                    mic_stats.get("max_limited_peak", 0.0),
+                    limiter.last_output_peak,
+                )
+                mic_stats["limiter_active_blocks"] += int(limiter.gain < 0.999)
+                mic_stats["limiter_min_gain"] = min(
+                    mic_stats.get("limiter_min_gain", 1.0), limiter.gain
+                )
+                mic_stats["post_limiter_clipped_samples"] += int(
+                    np.count_nonzero(np.abs(mono) >= 1.0)
+                )
                 audio_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
                 try:
                     audio_int16 = echo_processor.process(
                         audio_int16,
                         echo_reference.read(len(audio_int16)),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    mic_stats["aec_errors"] += 1
+                    mic_errors["aec"] = short_error(exc)
                 audio_bytes = audio_int16.tobytes()
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-                loop.call_soon_threadsafe(
-                    audio_send_queue.put_nowait,
-                    audio_b64
+                audio_send_queue.put_from_audio_thread(audio_b64)
+            except Exception as exc:
+                mic_stats["callback_errors"] += 1
+                mic_errors["callback"] = short_error(exc)
+            finally:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                mic_stats["max_callback_ms"] = max(
+                    mic_stats.get("max_callback_ms", 0.0), elapsed_ms
                 )
-            except Exception:
-                pass
+                deadline_ms = frames * 1000 / rate
+                if elapsed_ms >= deadline_ms:
+                    mic_stats["callback_deadline_misses"] += 1
 
         stream = sd.InputStream(
             device=device,
@@ -907,6 +1032,7 @@ async def audio_send_loop(websocket, state):
                     "audio",
                     data=audio_b64
                 )
+                sent_chunks += 1
 
             await asyncio.sleep(0)
 
@@ -919,6 +1045,26 @@ async def audio_send_loop(websocket, state):
             stream_in.close()
         except Exception:
             pass
+
+        print(
+            f"[audio:input] capture: {mic_stats['callbacks']} callbacks, "
+            f"{mic_stats['input_overflows']} input overflows, "
+            f"{mic_stats['callback_errors']} callback errors, "
+            f"{mic_stats['aec_errors']} AEC errors, "
+            f"{mic_stats['input_overrange_samples']} input samples above full scale, "
+            f"{mic_stats['post_limiter_clipped_samples']} post-limiter clipped samples, "
+            f"{mic_stats['limiter_active_blocks']} limiter blocks, "
+            f"minimum gain {mic_stats.get('limiter_min_gain', 1.0):.3f}, "
+            f"peak in/out {mic_stats.get('max_input_peak', 0.0):.3f}/"
+            f"{mic_stats.get('max_limited_peak', 0.0):.3f} FS, "
+            f"max callback {mic_stats.get('max_callback_ms', 0.0):.2f} ms, "
+            f"{mic_stats['callback_deadline_misses']} deadline misses, "
+            f"{audio_send_queue.dropped} queued chunks dropped, "
+            f"{sent_chunks} chunks sent",
+            file=sys.stderr,
+        )
+        for source, error in mic_errors.items():
+            print(f"[audio:input] last {source} error: {error}", file=sys.stderr)
 
 
 

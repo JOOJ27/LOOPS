@@ -188,6 +188,51 @@ def draw_color_row(win, y, x, row):
             pass
 
 
+def fit_ascii_frame(lines, colors, max_w, max_h):
+    """Redimensiona caracteres e cores juntos para caber no painel local."""
+    if not lines or max_w < 1 or max_h < 1:
+        return [], None
+
+    src_h = len(lines)
+    src_w = max((len(line) for line in lines), default=0)
+    if src_w < 1:
+        return [], None
+
+    # A grade já está compensada para a proporção física dos caracteres do
+    # terminal. Manter a proporção da grade evita cortar a imagem no receptor.
+    scale = min(max_w / src_w, max_h / src_h)
+    dst_w = max(1, min(max_w, int(src_w * scale + 0.5)))
+    dst_h = max(1, min(max_h, int(src_h * scale + 0.5)))
+
+    # Amostragem pelo centro da célula (nearest-neighbor), para manter cada
+    # caractere e índice xterm juntos sem inventar valores intermediários.
+    x_idx = np.minimum(
+        ((np.arange(dst_w) + 0.5) * src_w / dst_w).astype(np.intp),
+        src_w - 1,
+    )
+    y_idx = np.minimum(
+        ((np.arange(dst_h) + 0.5) * src_h / dst_h).astype(np.intp),
+        src_h - 1,
+    )
+
+    char_grid = np.full((src_h, src_w), " ", dtype="<U1")
+    for y, line in enumerate(lines):
+        if line:
+            char_grid[y, :len(line)] = list(line)
+    resized_chars = char_grid[y_idx[:, None], x_idx[None, :]]
+    resized_lines = ["".join(row) for row in resized_chars]
+
+    resized_colors = None
+    if (
+        colors is not None
+        and colors.ndim == 2
+        and colors.shape == (src_h, src_w)
+    ):
+        resized_colors = colors[y_idx[:, None], x_idx[None, :]]
+
+    return resized_lines, resized_colors
+
+
 def make_panel(h, w, y, x, title, pair, draw_box=True):
     """Cria uma janela com borda (opcional) e título."""
     outer = curses.newwin(h, w, y, x)
@@ -356,7 +401,7 @@ def draw_ascii_lines(win, lines, placeholder="", title="", pair=0, colors=None):
 
     # área útil para a imagem, já descontando a borda
     max_w, max_h = w - 2, h - 2
-    visible = [line[:max_w] for line in lines[:max_h]] if lines else []
+    visible, colors = fit_ascii_frame(lines, colors, max_w, max_h)
 
     # Sem imagem: borda no painel inteiro + placeholder no meio
     if not visible:
@@ -387,17 +432,9 @@ def draw_ascii_lines(win, lines, placeholder="", title="", pair=0, colors=None):
 
     draw_box(win, box_y, box_x, box_h, box_w, title, pair)
 
-    paint = None
-    if (
-        colors is not None
-        and colors.shape[0] >= image_h
-        and colors.shape[1] >= image_w
-    ):
-        paint = colors[:image_h, :image_w]
-
     for i, line in enumerate(visible):
-        if paint is not None:
-            draw_color_row(win, box_y + 1 + i, box_x + 1, paint[i])
+        if colors is not None:
+            draw_color_row(win, box_y + 1 + i, box_x + 1, colors[i])
             continue
 
         try:
